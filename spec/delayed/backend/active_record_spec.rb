@@ -122,6 +122,68 @@ describe Delayed::Backend::ActiveRecord::Job do
     end
   end
 
+  context "sequential queues" do
+    let(:max_runtime) { 2.minutes }
+    let(:worker) { Delayed::Worker.new }
+    let(:other_worker) do
+      other_worker = Delayed::Worker.new
+      other_worker.name = 'other_worker'
+      other_worker
+    end
+
+    before do
+      Delayed::Backend::ActiveRecord.configuration.sequential_queue_prefix = 'run_sequentially:'
+      Delayed::Backend::ActiveRecord::Job.delete_all
+    end
+
+    it "should be disabled by default" do
+      configuration = Delayed::Backend::ActiveRecord::Configuration.new
+      expect(configuration.sequential_queue_prefix).to be_nil
+    end
+
+    it "should work off sequential queues one by one" do
+      job_1 = Delayed::Backend::ActiveRecord::Job.enqueue payload_object: SequentialNamedQueueJob.new
+      job_2 = Delayed::Backend::ActiveRecord::Job.enqueue payload_object: SequentialNamedQueueJob.new
+
+      expect(Delayed::Backend::ActiveRecord::Job.ready_to_run(worker.name, max_runtime).count).to eql(2)
+      expect(Delayed::Backend::ActiveRecord::Job.reserve(worker)).to eql(job_1)
+
+      expect(Delayed::Backend::ActiveRecord::Job.ready_to_run(other_worker.name, max_runtime).count).to eql(0)
+
+      worker.run job_1
+
+      expect(Delayed::Backend::ActiveRecord::Job.ready_to_run(worker.name, max_runtime).count).to eql(1)
+      expect(Delayed::Backend::ActiveRecord::Job.ready_to_run(other_worker.name, max_runtime).count).to eql(1)
+      expect(Delayed::Backend::ActiveRecord::Job.reserve(other_worker)).to eql(job_2)
+    end
+
+    it "should run regular jobs in parallel" do
+      job_1 = Delayed::Backend::ActiveRecord::Job.enqueue payload_object: SequentialNamedQueueJob.new
+      job_2 = Delayed::Backend::ActiveRecord::Job.enqueue payload_object: SequentialNamedQueueJob.new
+
+      job_3 = Delayed::Backend::ActiveRecord::Job.enqueue payload_object: SimpleJob.new
+
+      expect(Delayed::Backend::ActiveRecord::Job.ready_to_run(worker.name, max_runtime).count).to eql(3)
+      expect(Delayed::Backend::ActiveRecord::Job.reserve(worker)).to eql(job_1)
+
+      expect(Delayed::Backend::ActiveRecord::Job.ready_to_run(other_worker.name, max_runtime).count).to eql(1)
+      expect(Delayed::Backend::ActiveRecord::Job.reserve(other_worker)).to eql(job_3)
+    end
+
+    it "should work off different sequential queues in parallel" do
+      queue_1_job_1 = Delayed::Backend::ActiveRecord::Job.enqueue payload_object: SequentialNamedQueueJob.new(queue_name: 'queue_1')
+      queue_1_job_2 = Delayed::Backend::ActiveRecord::Job.enqueue payload_object: SequentialNamedQueueJob.new(queue_name: 'queue_1')
+      queue_2_job_1 = Delayed::Backend::ActiveRecord::Job.enqueue payload_object: SequentialNamedQueueJob.new(queue_name: 'queue_2')
+      queue_2_job_2 = Delayed::Backend::ActiveRecord::Job.enqueue payload_object: SequentialNamedQueueJob.new(queue_name: 'queue_3')
+
+      expect(Delayed::Backend::ActiveRecord::Job.ready_to_run(worker.name, max_runtime).count).to eql(4)
+      expect(Delayed::Backend::ActiveRecord::Job.reserve(worker)).to eql(queue_1_job_1)
+
+      expect(Delayed::Backend::ActiveRecord::Job.ready_to_run(other_worker.name, max_runtime).count).to eql(2)
+      expect(Delayed::Backend::ActiveRecord::Job.reserve(other_worker)).to eql(queue_2_job_1)
+    end
+  end
+
   context "ActiveRecord::Base.table_name_prefix" do
     it "when prefix is not set, use 'delayed_jobs' as table name" do
       ::ActiveRecord::Base.table_name_prefix = nil

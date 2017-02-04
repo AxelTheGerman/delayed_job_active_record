@@ -62,5 +62,22 @@ class Story < ActiveRecord::Base
   handle_asynchronously :whatever
 end
 
+class SequentialNamedQueueJob
+  attr_reader :name
+
+  def initialize(queue_name: 'named_queue')
+    @name = queue_name
+  end
+
+  def perform
+    # no-op
+  end
+
+  def queue_name
+    Delayed::Backend::ActiveRecord.configuration.sequential_queue_prefix + @name
+  end
+end
+
+
 # Add this directory so the ActiveSupport autoloading works
 ActiveSupport::Dependencies.autoload_paths << File.dirname(__FILE__)

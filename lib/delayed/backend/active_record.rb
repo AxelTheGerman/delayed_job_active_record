@@ -4,6 +4,7 @@ module Delayed
     module ActiveRecord
       class Configuration
         attr_reader :reserve_sql_strategy
+        attr_accessor :sequential_queue_prefix
 
         def initialize
           self.reserve_sql_strategy = :optimized_sql
@@ -45,7 +46,15 @@ module Delayed
         set_delayed_job_table_name
 
         def self.ready_to_run(worker_name, max_run_time)
-          where("(run_at <= ? AND (locked_at IS NULL OR locked_at < ?) OR locked_by = ?) AND failed_at IS NULL", db_time_now, db_time_now - max_run_time, worker_name)
+          ready_scope = where("(run_at <= ? AND (locked_at IS NULL OR locked_at < ?) OR locked_by = ?) AND failed_at IS NULL", db_time_now, db_time_now - max_run_time, worker_name)
+
+          active_queues = select('queue').distinct.where('locked_at IS NOT NULL AND locked_by != ?', worker_name).map(&:queue)
+          protected_queues = active_queues.keep_if { |queue| sequential_queue? queue }
+          protected_queues.empty? ? ready_scope : ready_scope.where('(queue NOT IN (?) OR queue IS NULL)', protected_queues)
+        end
+
+        def self.sequential_queue?(queue)
+          queue && queue.start_with?(Delayed::Backend::ActiveRecord.configuration.sequential_queue_prefix)
         end
 
         def self.before_fork
