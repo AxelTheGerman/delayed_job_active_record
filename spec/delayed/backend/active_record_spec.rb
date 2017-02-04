@@ -123,6 +123,7 @@ describe Delayed::Backend::ActiveRecord::Job do
   end
 
   context "sequential queues" do
+    let(:new_configuration) { Delayed::Backend::ActiveRecord::Configuration.new }
     let(:max_runtime) { 2.minutes }
     let(:worker) { Delayed::Worker.new }
     let(:other_worker) do
@@ -131,14 +132,61 @@ describe Delayed::Backend::ActiveRecord::Job do
       other_worker
     end
 
+    def expect_sequential_execution(job_1, job_2)
+      dj_1 = Delayed::Backend::ActiveRecord::Job.enqueue payload_object: job_1
+      dj_2 = Delayed::Backend::ActiveRecord::Job.enqueue payload_object: job_2
+
+      expect(Delayed::Backend::ActiveRecord::Job.ready_to_run(worker.name, max_runtime).count).to eql(2)
+      expect(Delayed::Backend::ActiveRecord::Job.reserve(worker)).to eql(dj_1)
+
+      expect(Delayed::Backend::ActiveRecord::Job.ready_to_run(other_worker.name, max_runtime).count).to eql(0)
+
+      expect(worker.run dj_1).to be(true)
+
+      expect(Delayed::Backend::ActiveRecord::Job.ready_to_run(worker.name, max_runtime).count).to eql(1)
+      expect(Delayed::Backend::ActiveRecord::Job.ready_to_run(other_worker.name, max_runtime).count).to eql(1)
+      expect(Delayed::Backend::ActiveRecord::Job.reserve(other_worker)).to eql(dj_2)
+    end
+
     before do
-      Delayed::Backend::ActiveRecord.configuration.sequential_queue_prefix = 'run_sequentially:'
+      Delayed::Backend::ActiveRecord.configuration.sequential_queues = Proc.new { |queue| queue.start_with? SequentialNamedQueueJob::PREFIX }
       Delayed::Backend::ActiveRecord::Job.delete_all
     end
 
     it "should be disabled by default" do
-      configuration = Delayed::Backend::ActiveRecord::Configuration.new
-      expect(configuration.sequential_queue_prefix).to be_nil
+      Delayed::Backend::ActiveRecord::Job.enqueue payload_object: SequentialNamedQueueJob.new
+      expect(new_configuration.sequential_queues).to be(false)
+
+      Delayed::Backend::ActiveRecord.configuration.sequential_queues = false
+      expect(Delayed::Backend::ActiveRecord::Job).not_to receive(:find_protected_queues)
+      Delayed::Backend::ActiveRecord::Job.ready_to_run(worker.name, max_runtime)
+    end
+
+    it "should accept boolean value" do
+      new_configuration.sequential_queues = true
+      expect(new_configuration.sequential_queues).to be(true)
+
+      Delayed::Backend::ActiveRecord.configuration.sequential_queues = true
+      expect_sequential_execution SimpleNamedQueueJob.new, SimpleNamedQueueJob.new
+    end
+
+    it "should accept a list of queue names" do
+      job = SimpleNamedQueueJob.new
+      sequential_queues = ['queue_1', 'queue_2', job.queue_name]
+      new_configuration.sequential_queues = sequential_queues
+      expect(new_configuration.sequential_queues).to be(sequential_queues)
+
+      Delayed::Backend::ActiveRecord.configuration.sequential_queues = sequential_queues
+      expect_sequential_execution job, SimpleNamedQueueJob.new
+    end
+
+    it "should accept a proc" do
+      sequential_proc = Proc.new { |queue_name| queue_name.start_with? SequentialNamedQueueJob::PREFIX }
+      new_configuration.sequential_queues = sequential_proc
+      expect(new_configuration.sequential_queues).to be(sequential_proc)
+
+      Delayed::Backend::ActiveRecord.configuration.sequential_queues = sequential_proc
+      expect_sequential_execution SequentialNamedQueueJob.new, SequentialNamedQueueJob.new
     end
 
     it "should work off sequential queues one by one" do

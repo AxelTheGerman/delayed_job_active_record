@@ -3,16 +3,20 @@ module Delayed
   module Backend
     module ActiveRecord
       class Configuration
-        attr_reader :reserve_sql_strategy
-        attr_accessor :sequential_queue_prefix
+        attr_reader :reserve_sql_strategy, :sequential_queues
 
         def initialize
           self.reserve_sql_strategy = :optimized_sql
+          self.sequential_queues = false
         end
 
         def reserve_sql_strategy=(val)
           raise ArgumentError, "allowed values are :optimized_sql or :default_sql" unless val == :optimized_sql || val == :default_sql
           @reserve_sql_strategy = val
+        end
+
+        def sequential_queues=(val)
+          @sequential_queues = val
         end
       end
 
@@ -48,13 +52,19 @@ module Delayed
         def self.ready_to_run(worker_name, max_run_time)
           ready_scope = where("(run_at <= ? AND (locked_at IS NULL OR locked_at < ?) OR locked_by = ?) AND failed_at IS NULL", db_time_now, db_time_now - max_run_time, worker_name)
 
-          active_queues = select('queue').distinct.where('locked_at IS NOT NULL AND locked_by != ?', worker_name).map(&:queue)
-          protected_queues = active_queues.keep_if { |queue| sequential_queue? queue }
-          protected_queues.empty? ? ready_scope : ready_scope.where('(queue NOT IN (?) OR queue IS NULL)', protected_queues)
+          if Delayed::Backend::ActiveRecord.configuration.sequential_queues
+            active_queues = select('queue').distinct.where('locked_at IS NOT NULL AND locked_by != ? AND queue IS NOT NULL', worker_name).map(&:queue)
+            protected_queues = find_protected_queues(active_queues, Delayed::Backend::ActiveRecord.configuration.sequential_queues)
+            protected_queues.empty? ? ready_scope : ready_scope.where('(queue NOT IN (?) OR queue IS NULL)', protected_queues)
+          else
+            ready_scope
+          end
         end
 
-        def self.sequential_queue?(queue)
-          queue && queue.start_with?(Delayed::Backend::ActiveRecord.configuration.sequential_queue_prefix)
+        def self.find_protected_queues(active_queues, config)
+          return active_queues if config == true
+          return active_queues.select { |queue| config.call queue } if config.is_a? Proc
+          return active_queues & config if config.is_a? Array
         end
 
         def self.before_fork

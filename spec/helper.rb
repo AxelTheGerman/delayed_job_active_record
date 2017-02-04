@@ -62,7 +62,7 @@ class Story < ActiveRecord::Base
   handle_asynchronously :whatever
 end
 
-class SequentialNamedQueueJob
+class SimpleNamedQueueJob
   attr_reader :name
 
   def initialize(queue_name: 'named_queue')
@@ -74,7 +74,15 @@ class SequentialNamedQueueJob
   end
 
   def queue_name
-    Delayed::Backend::ActiveRecord.configuration.sequential_queue_prefix + @name
+    @name
+  end
+end
+
+class SequentialNamedQueueJob < SimpleNamedQueueJob
+  PREFIX = 'sequential:'
+
+  def queue_name
+    PREFIX + super
   end
 end
 
